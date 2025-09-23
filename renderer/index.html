@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WFM Scanner App</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="app-header">
+            <div class="header-content">
+                <div class="logo-section">
+                    <div class="logo">🛒</div>
+                    <div class="title-section">
+                        <h1>WFM Scanner</h1>
+                        <p>Whole Foods Market Item Analysis</p>
+                    </div>
+                </div>
+                <div class="header-stats">
+                    <div class="stat-card">
+                        <span class="stat-number" id="totalItems">0</span>
+                        <span class="stat-label">Total Items</span>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-number" id="itemsProcessed">0</span>
+                        <span class="stat-label">Processed</span>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-number" id="successRate">0%</span>
+                        <span class="stat-label">Success Rate</span>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- Left Sidebar - Configuration -->
+            <aside class="sidebar">
+                <div class="sidebar-section">
+                    <h3>🔧 Scanner Mode</h3>
+                    <div class="mode-selector-container">
+                        <select id="scanModeSelect" class="mode-selector">
+                            <option value="item">📦 Item Mode</option>
+                            <option value="merchandising">🎠 Merchandising Mode</option>
+                            <option value="competitive" disabled>🏆 Competitive Mode (Coming Soon)</option>
+                        </select>
+                        <div class="mode-description">
+                            <div id="itemModeDesc" class="mode-desc active">
+                                <strong>Item Mode:</strong> Scans individual product pages using ASIN list to collect detailed product data (price, nutrition, ingredients, variations, etc.)
+                            </div>
+                            <div id="merchandisingModeDesc" class="mode-desc">
+                                <strong>Merchandising Mode:</strong> Analyzes catering page shoveler carousels to extract ASINs and their associated promotional sections for each store
+                            </div>
+                            <div id="competitiveModeDesc" class="mode-desc">
+                                <strong>Competitive Mode:</strong> Compare pricing and availability across different stores for competitive analysis and market research
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="sidebar-section">
+                    <h3>� File Configuration</h3>
+                    <div class="file-input-group">
+                        <label>Store Mapping</label>
+                        <button id="selectStoreMappingBtn" class="file-btn">
+                            📁 Select CSV File
+                        </button>
+                        <span id="storeMappingFile" class="file-status">No file selected</span>
+                    </div>
+                    <div class="file-input-group item-list-group" id="itemListGroup">
+                        <label>Item List</label>
+                        <button id="selectItemListBtn" class="file-btn">
+                            📊 Select Excel/CSV File
+                        </button>
+                        <span id="itemListFile" class="file-status">No file selected</span>
+                        <div class="form-help">Required for Item Mode only. Not needed for Merchandising Mode.</div>
+                    </div>
+                </div>
+
+                <div class="sidebar-section">
+                    <h3>⚙️ Scan Settings</h3>
+                    <div class="settings-grid">
+                        <div class="setting-group">
+                            <label>Item Delay (ms)</label>
+                            <input type="number" id="delayBetweenItems" value="2000" min="500" max="10000">
+                        </div>
+                        <div class="setting-group">
+                            <label>Store Delay (ms)</label>
+                            <input type="number" id="delayBetweenStores" value="5000" min="1000" max="30000">
+                        </div>
+                        <div class="setting-group">
+                            <label>Page Timeout (ms)</label>
+                            <input type="number" id="pageTimeout" value="30000" min="5000" max="120000">
+                        </div>
+                        <div class="setting-group">
+                            <label>Max Retries</label>
+                            <input type="number" id="maxRetries" value="3" min="1" max="10">
+                        </div>
+                        <div class="setting-group">
+                            <label>Concurrent Agents</label>
+                            <input type="number" id="maxConcurrentAgents" value="3" min="1">
+                        </div>
+                    </div>
+                    
+                    <div class="checkbox-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="headlessMode">
+                            <span class="checkmark"></span>
+                            Headless Mode
+                        </label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="captureScreenshots">
+                            <span class="checkmark"></span>
+                            Take Screenshots (*Warning*)
+                        </label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="skipExistingResults">
+                            <span class="checkmark"></span>
+                            Skip Existing Results
+                        </label>
+                    </div>
+                </div>
+
+            </aside>
+
+            <!-- Main Content Area -->
+            <main class="content-area">
+                <!-- Controls Section -->
+                <section class="controls-section">
+                    <div class="controls-header">
+                        <h3>🎮 Scan Controls</h3>
+                        <div class="control-status">
+                            <span class="status-indicator" id="scanStatus">Ready</span>
+                        </div>
+                    </div>
+                    <div class="control-buttons-main">
+                        <button id="startScanBtn" class="btn btn-primary btn-large" disabled>
+                            <span class="btn-icon">▶️</span>
+                            Start Scan
+                        </button>
+                        <button id="stopScanBtn" class="btn btn-secondary btn-large" disabled>
+                            <span class="btn-icon">⏹️</span>
+                            Stop Scan
+                        </button>
+                        <button id="exportResultsBtn" class="btn btn-success btn-large" disabled>
+                            <span class="btn-icon">📊</span>
+                            Export Results
+                        </button>
+                    </div>
+                </section>
+
+                <!-- Progress Section -->
+                <section class="progress-section">
+                    <div class="progress-header">
+                        <h3>📊 Scan Progress</h3>
+                        <div class="progress-details">
+                            <span class="current-store">Store: <strong id="currentStore">-</strong></span>
+                            <span class="active-agents">Agents: <strong id="activeAgents">0</strong></span>
+                            <span class="avg-time">Avg: <strong id="elapsedTime">00:00:00</strong></span>
+                        </div>
+                    </div>
+                    <div class="progress-bar-container">
+                        <div class="progress-bar">
+                            <div class="progress-fill" id="progressFill"></div>
+                        </div>
+                        <span class="progress-text" id="progressText">Ready to start scanning</span>
+                    </div>
+                </section>
+
+                <!-- Results Section -->
+                <section class="results-section">
+                    <div class="results-header">
+                        <h3>📋 Scan Results</h3>
+                        <div class="results-controls">
+                            <input type="text" id="searchFilter" placeholder="🔍 Search results..." class="search-input">
+                            <select id="statusFilter" class="filter-select">
+                                <option value="">All Status</option>
+                                <option value="success">✅ Success</option>
+                                <option value="error">❌ Error</option>
+                                <option value="timeout">⏱️ Timeout</option>
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <div class="table-container" id="tableContainer">
+                        <div id="resultsTable" class="results-table">
+                            <div class="table-header">
+                                <span class="col-store">Store</span>
+                                <span class="col-asin">ASIN</span>
+                                <span class="col-name">Item Name</span>
+                                <span class="col-extracted">Extracted Name</span>
+                                <span class="col-price">Price</span>
+                                <span class="col-nutrition">Nutrition</span>
+                                <span class="col-ingredients">Ingredients</span>
+                                <span class="col-cart">Add to Cart</span>
+                                <span class="col-available">Available</span>
+                                <span class="col-variations">Variations</span>
+                                <span class="col-bundle">Bundle</span>
+                                <span class="col-bundle-parts">Bundle Parts</span>
+                                <span class="col-status">Status</span>
+                                <span class="col-time">Load Time</span>
+                                <span class="col-timestamp">Timestamp</span>
+                            </div>
+                            <div id="resultsBody" class="table-body">
+                                <div class="no-results">
+                                    <div class="no-results-icon">📊</div>
+                                    <div class="no-results-text">No scan results yet</div>
+                                    <div class="no-results-subtext">Configure your settings and start scanning to see results here</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Logs Section -->
+                <section class="logs-section">
+                    <div class="logs-header">
+                        <h3>📝 Activity Logs</h3>
+                        <div class="log-controls">
+                            <button class="btn btn-small" id="clearLogBtn">Clear Logs</button>
+                            <button class="btn btn-small" id="exportLogBtn">Export Log</button>
+                        </div>
+                    </div>
+                    <div class="logs-container" id="logOutput">
+                        <div class="log-entry info">
+                            <span class="log-time">[Ready]</span>
+                            <span class="log-message">Application initialized and ready to scan</span>
+                        </div>
+                    </div>
+                </section>
+            </main>
+        </div>
+    </div>
+
+    <script src="renderer.js"></script>
+</body>
+</html>

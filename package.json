@@ -1,0 +1,72 @@
+{
+  "name": "wfm-scanner-app",
+  "version": "1.0.0",
+  "description": "Electron app for systematically scanning Whole Foods Market items across stores using Playwright",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build": "electron-builder --win",
+    "postinstall": "echo Skipping Playwright browser download (Route B: download on first run)"
+  },
+  "keywords": [
+    "electron",
+    "playwright",
+    "whole-foods",
+    "scanner",
+    "automation"
+  ],
+  "author": "WTS-TM-Scripts",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1"
+  },
+  "dependencies": {
+    "playwright": "^1.40.0",
+    "exceljs": "^4.4.0",
+    "csv-parser": "^3.0.0",
+    "node-fetch": "^3.3.2"
+  },
+  "build": {
+    "appId": "com.wts.scanner-app",
+    "productName": "WFM Scanner App",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "renderer/**/*",
+      "sample_data/**/*",
+      "package.json"
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        },
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        },
+        {
+          "target": "dir",
+          "arch": ["x64"]
+        }
+      ],
+      "requestedExecutionLevel": "asInvoker"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "nodeGypRebuild": false,
+    "buildDependenciesFromSource": false,
+    "npmRebuild": false,
+    "forceCodeSigning": false
+  }
+}
