@@ -67,6 +67,7 @@
     "nodeGypRebuild": false,
     "buildDependenciesFromSource": false,
     "npmRebuild": false,
-    "forceCodeSigning": false
+    "forceCodeSigning": false,
+    "publish": null
   }
 }
