@@ -25,33 +25,28 @@ jobs:
       with:
         node-version: '18'
         cache: 'npm'
-        cache-dependency-path: Scanner_APP/package-lock.json
+        cache-dependency-path: package-lock.json
         
     - name: Install dependencies
-      working-directory: Scanner_APP
       run: npm ci
       
     - name: Install Playwright browsers
-      working-directory: Scanner_APP
       run: npx playwright install --with-deps
       
     - name: Build Electron app (Windows)
       if: matrix.os == 'windows-latest'
-      working-directory: Scanner_APP
       run: npm run build
       env:
         CSC_IDENTITY_AUTO_DISCOVERY: false
         
     - name: Build Electron app (macOS)
       if: matrix.os == 'macos-latest'
-      working-directory: Scanner_APP
       run: npm run build
       env:
         CSC_IDENTITY_AUTO_DISCOVERY: false
         
     - name: Build Electron app (Linux)
       if: matrix.os == 'ubuntu-latest'
-      working-directory: Scanner_APP
       run: npm run build
       env:
         CSC_IDENTITY_AUTO_DISCOVERY: false
@@ -62,8 +57,8 @@ jobs:
       with:
         name: wfm-scanner-windows
         path: |
-          Scanner_APP/dist/*.exe
-          Scanner_APP/dist/win-unpacked/
+          dist/*.exe
+          dist/win-unpacked/
         retention-days: 30
         
     - name: Upload macOS artifacts
@@ -72,8 +67,8 @@ jobs:
       with:
         name: wfm-scanner-macos
         path: |
-          Scanner_APP/dist/*.dmg
-          Scanner_APP/dist/mac/
+          dist/*.dmg
+          dist/mac/
         retention-days: 30
         
     - name: Upload Linux artifacts
@@ -82,8 +77,8 @@ jobs:
       with:
         name: wfm-scanner-linux
         path: |
-          Scanner_APP/dist/*.AppImage
-          Scanner_APP/dist/linux-unpacked/
+          dist/*.AppImage
+          dist/linux-unpacked/
         retention-days: 30
 
   release:
