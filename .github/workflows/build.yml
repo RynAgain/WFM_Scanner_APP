@@ -35,27 +35,33 @@ jobs:
       
     - name: Build Electron app (Windows)
       if: matrix.os == 'windows-latest'
-      run: npx electron-builder --win
+      run: npx electron-builder --win --publish=never
       env:
         CSC_IDENTITY_AUTO_DISCOVERY: false
-        EP_DRAFT: false
-        EP_PRE_RELEASE: false
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         
     - name: Build Electron app (macOS)
       if: matrix.os == 'macos-latest'
-      run: npx electron-builder --mac
+      run: npx electron-builder --mac --publish=never
       env:
         CSC_IDENTITY_AUTO_DISCOVERY: false
-        EP_DRAFT: false
-        EP_PRE_RELEASE: false
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         
     - name: Build Electron app (Linux)
       if: matrix.os == 'ubuntu-latest'
-      run: npx electron-builder --linux
+      run: npx electron-builder --linux --publish=never
       env:
         CSC_IDENTITY_AUTO_DISCOVERY: false
-        EP_DRAFT: false
-        EP_PRE_RELEASE: false
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Commit build artifacts
+      if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add dist/ || true
+        git diff --staged --quiet || git commit -m "Update build artifacts [skip ci]"
+        git push || true
         
     - name: Upload Windows artifacts
       if: matrix.os == 'windows-latest'
@@ -96,18 +102,21 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
       
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: package-lock.json
+        
+    - name: Install dependencies
+      run: npm ci
+      
     - name: Download all artifacts
       uses: actions/download-artifact@v4
       
-    - name: Create Release
-      uses: softprops/action-gh-release@v1
-      with:
-        files: |
-          wfm-scanner-windows/**/*
-          wfm-scanner-macos/**/*
-          wfm-scanner-linux/**/*
-        draft: false
-        prerelease: false
-        generate_release_notes: true
+    - name: Publish to GitHub Releases
+      run: npx electron-builder --publish=always
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        CSC_IDENTITY_AUTO_DISCOVERY: false

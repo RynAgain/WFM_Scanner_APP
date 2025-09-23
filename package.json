@@ -26,7 +26,8 @@
     "playwright": "^1.40.0",
     "exceljs": "^4.4.0",
     "csv-parser": "^3.0.0",
-    "node-fetch": "^3.3.2"
+    "node-fetch": "^3.3.2",
+    "electron-updater": "^6.1.7"
   },
   "build": {
     "appId": "com.wts.scanner-app",
@@ -68,6 +69,10 @@
     "buildDependenciesFromSource": false,
     "npmRebuild": false,
     "forceCodeSigning": false,
-    "publish": null
+    "publish": {
+      "provider": "github",
+      "owner": "sattryay",
+      "repo": "WFM_Scanner_APP"
+    }
   }
 }

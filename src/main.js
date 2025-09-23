@@ -1,4 +1,5 @@
 const { app, BrowserWindow, ipcMain, dialog, screen } = require('electron');
+const { autoUpdater } = require('electron-updater');
 const path = require('path');
 const fs = require('fs');
 
@@ -340,7 +341,81 @@ function setupIpcHandlers() {
         }
     });
 
+    // Handle manual update check
+    ipcMain.handle('check-for-updates', async () => {
+        console.log('Manual update check requested');
+        try {
+            const result = await autoUpdater.checkForUpdatesAndNotify();
+            return { success: true, result };
+        } catch (error) {
+            console.error('Error checking for updates:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    // Handle restart and install update
+    ipcMain.handle('restart-and-install', () => {
+        console.log('Restart and install requested');
+        autoUpdater.quitAndInstall();
+    });
+
     console.log('IPC handlers set up');
+}
+
+// Auto-updater configuration
+function setupAutoUpdater() {
+    // Configure auto-updater
+    autoUpdater.checkForUpdatesAndNotify();
+    
+    // Auto-updater events
+    autoUpdater.on('checking-for-update', () => {
+        console.log('Checking for update...');
+        if (mainWindow) {
+            mainWindow.webContents.send('updater-message', 'Checking for updates...');
+        }
+    });
+    
+    autoUpdater.on('update-available', (info) => {
+        console.log('Update available:', info);
+        if (mainWindow) {
+            mainWindow.webContents.send('updater-message', 'Update available. Downloading...');
+        }
+    });
+    
+    autoUpdater.on('update-not-available', (info) => {
+        console.log('Update not available:', info);
+        if (mainWindow) {
+            mainWindow.webContents.send('updater-message', 'App is up to date.');
+        }
+    });
+    
+    autoUpdater.on('error', (err) => {
+        console.error('Auto-updater error:', err);
+        if (mainWindow) {
+            mainWindow.webContents.send('updater-message', 'Error checking for updates.');
+        }
+    });
+    
+    autoUpdater.on('download-progress', (progressObj) => {
+        let log_message = "Download speed: " + progressObj.bytesPerSecond;
+        log_message = log_message + ' - Downloaded ' + progressObj.percent + '%';
+        log_message = log_message + ' (' + progressObj.transferred + "/" + progressObj.total + ')';
+        console.log(log_message);
+        if (mainWindow) {
+            mainWindow.webContents.send('updater-progress', progressObj);
+        }
+    });
+    
+    autoUpdater.on('update-downloaded', (info) => {
+        console.log('Update downloaded:', info);
+        if (mainWindow) {
+            mainWindow.webContents.send('updater-message', 'Update downloaded. Restart to apply.');
+        }
+        // Auto-restart after 5 seconds
+        setTimeout(() => {
+            autoUpdater.quitAndInstall();
+        }, 5000);
+    });
 }
 
 // App event handlers
@@ -348,6 +423,11 @@ app.whenReady().then(() => {
     console.log('Electron app ready');
     createWindow();
     setupIpcHandlers();
+    
+    // Set up auto-updater after a short delay to ensure window is ready
+    setTimeout(() => {
+        setupAutoUpdater();
+    }, 3000);
 });
 
 app.on('window-all-closed', () => {

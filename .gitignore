@@ -39,6 +39,14 @@ temp/
 
 # Electron-specific build outputs
 dist/
+# Allow only final distributables for electron-updater
+!dist/*.exe
+!dist/*.dmg
+!dist/*.AppImage
+!dist/*.deb
+!dist/*.rpm
+!dist/*.snap
+!dist/latest*.yml
 out/
 build/
 
