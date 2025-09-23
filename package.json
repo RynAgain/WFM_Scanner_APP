@@ -1,13 +1,13 @@
 {
   "name": "wfm-scanner-app",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Electron app for systematically scanning Whole Foods Market items across stores using Playwright",
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
     "build": "electron-builder --win",
-    "postinstall": "echo \"Skipping Playwright browser download (Route B: download on first run)\""
+    "postinstall": "echo \"Skipping Playwright browser download - Route B: download on first run\""
   },
   "keywords": [
     "electron",
