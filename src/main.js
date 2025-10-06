@@ -359,6 +359,11 @@ function setupIpcHandlers() {
         autoUpdater.quitAndInstall();
     });
 
+    // Handle get app version
+    ipcMain.handle('get-app-version', () => {
+        return app.getVersion();
+    });
+
     console.log('IPC handlers set up');
 }
 

@@ -135,6 +135,72 @@ body {
     font-weight: 300;
 }
 
+/* Version Info */
+.version-info {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--spacing-xs);
+    margin-right: var(--spacing-lg);
+}
+
+#appVersion {
+    font-size: var(--font-size-xs);
+    color: rgba(255, 255, 255, 0.8);
+    background: rgba(255, 255, 255, 0.1);
+    padding: var(--spacing-xs) var(--spacing-sm);
+    border-radius: var(--radius-sm);
+    font-weight: 500;
+    letter-spacing: 0.5px;
+}
+
+.update-status {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--spacing-xs);
+    min-width: 200px;
+}
+
+#updateMessage {
+    font-size: var(--font-size-xs);
+    color: rgba(255, 255, 255, 0.9);
+    text-align: center;
+    padding: var(--spacing-xs) var(--spacing-sm);
+    background: rgba(255, 153, 0, 0.2);
+    border-radius: var(--radius-sm);
+    border: 1px solid rgba(255, 153, 0, 0.3);
+}
+
+.update-progress {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+}
+
+.progress-bar-small {
+    flex: 1;
+    height: 8px;
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+}
+
+.progress-fill-small {
+    height: 100%;
+    background: linear-gradient(90deg, var(--wf-orange) 0%, var(--wf-orange-light) 100%);
+    width: 0%;
+    transition: width 0.3s ease;
+}
+
+#updateProgressText {
+    font-size: var(--font-size-xs);
+    color: rgba(255, 255, 255, 0.8);
+    font-weight: 500;
+    min-width: 30px;
+}
+
 .header-stats {
     display: flex;
     gap: var(--spacing-lg);

@@ -76,6 +76,14 @@ class WFMScannerUI {
     initializeUI() {
         // Get DOM elements with new IDs
         this.elements = {
+            // Version and update elements
+            appVersion: document.getElementById('appVersion'),
+            updateStatus: document.getElementById('updateStatus'),
+            updateMessage: document.getElementById('updateMessage'),
+            updateProgress: document.getElementById('updateProgress'),
+            updateProgressFill: document.getElementById('updateProgressFill'),
+            updateProgressText: document.getElementById('updateProgressText'),
+            
             // Mode selector
             scanModeSelect: document.getElementById('scanModeSelect'),
             itemModeDesc: document.getElementById('itemModeDesc'),
@@ -129,6 +137,9 @@ class WFMScannerUI {
 
         // Initialize mode toggle
         this.updateModeUI();
+
+        // Initialize version display
+        this.initializeVersion();
 
         this.log('🚀 WFM Scanner App initialized with new responsive UI', 'info');
         this.log('📐 Configured for side-by-side window display', 'info');
@@ -233,6 +244,15 @@ class WFMScannerUI {
         // Scan result updates
         ipcRenderer.on('scan-result', (event, result) => {
             this.addResult(result);
+        });
+
+        // Auto-updater events
+        ipcRenderer.on('updater-message', (event, message) => {
+            this.showUpdateMessage(message);
+        });
+
+        ipcRenderer.on('updater-progress', (event, progressObj) => {
+            this.showUpdateProgress(progressObj);
         });
     }
 
@@ -745,6 +765,77 @@ class WFMScannerUI {
             
         } catch (error) {
             this.log(`❌ Error exporting log: ${error.message}`, 'error');
+        }
+    }
+
+    async initializeVersion() {
+        try {
+            // Get version from package.json via main process
+            const version = await ipcRenderer.invoke('get-app-version');
+            if (this.elements.appVersion && version) {
+                this.elements.appVersion.textContent = `v${version}`;
+            }
+        } catch (error) {
+            console.error('Error getting app version:', error);
+            if (this.elements.appVersion) {
+                this.elements.appVersion.textContent = 'v1.0.0';
+            }
+        }
+    }
+
+    showUpdateMessage(message) {
+        if (this.elements.updateStatus && this.elements.updateMessage) {
+            this.elements.updateStatus.classList.remove('hidden');
+            this.elements.updateMessage.textContent = message;
+            
+            // Log update messages
+            this.log(`🔄 Update: ${message}`, 'info');
+            
+            // Hide progress bar for non-download messages
+            if (!message.includes('Downloading') && !message.includes('Downloaded')) {
+                if (this.elements.updateProgress) {
+                    this.elements.updateProgress.classList.add('hidden');
+                }
+            }
+        }
+    }
+
+    showUpdateProgress(progressObj) {
+        if (this.elements.updateProgress && this.elements.updateProgressFill && this.elements.updateProgressText) {
+            this.elements.updateProgress.classList.remove('hidden');
+            
+            const percent = Math.round(progressObj.percent);
+            this.elements.updateProgressFill.style.width = `${percent}%`;
+            this.elements.updateProgressText.textContent = `${percent}%`;
+            
+            // Log progress periodically (every 10%)
+            if (percent % 10 === 0) {
+                const speed = (progressObj.bytesPerSecond / 1024 / 1024).toFixed(1);
+                this.log(`📥 Update download: ${percent}% (${speed} MB/s)`, 'info');
+            }
+        }
+    }
+
+    async checkForUpdates() {
+        try {
+            this.log('🔍 Checking for updates...', 'info');
+            const result = await ipcRenderer.invoke('check-for-updates');
+            if (result.success) {
+                this.log('✅ Update check completed', 'success');
+            } else {
+                this.log(`❌ Update check failed: ${result.error}`, 'error');
+            }
+        } catch (error) {
+            this.log(`❌ Error checking for updates: ${error.message}`, 'error');
+        }
+    }
+
+    async restartAndInstall() {
+        try {
+            this.log('🔄 Restarting to install update...', 'info');
+            await ipcRenderer.invoke('restart-and-install');
+        } catch (error) {
+            this.log(`❌ Error restarting for update: ${error.message}`, 'error');
         }
     }
 }
