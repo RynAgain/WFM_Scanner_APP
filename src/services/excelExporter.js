@@ -8,6 +8,30 @@ class ExcelExporter {
         this.maxFiles = 3; // Keep only 3 most recent files
     }
 
+    /**
+     * Sanitize cell values to prevent CSV injection attacks
+     * @param {*} value - The value to sanitize
+     * @returns {string} - Sanitized value safe for Excel
+     */
+    sanitizeForExcel(value) {
+        if (value === null || value === undefined) {
+            return '';
+        }
+        
+        // Convert to string
+        const str = String(value);
+        
+        // Check for dangerous characters at start that could trigger formula execution
+        const dangerous = ['=', '+', '-', '@', '\t', '\r', '\n'];
+        
+        if (dangerous.some(char => str.startsWith(char))) {
+            // Prefix with single quote to prevent formula execution
+            return `'${str}`;
+        }
+        
+        return str;
+    }
+
     async exportResults(results, filePath) {
         try {
             console.log('📤 Starting Excel export...');
@@ -55,6 +79,231 @@ class ExcelExporter {
         }
     }
 
+    async exportFromDatabase(db, sessionId, filePath) {
+        try {
+            console.log('📤 Starting streaming Excel export from database...');
+            console.log(`📊 Session ID: ${sessionId}`);
+            
+            // Use streaming workbook writer for memory efficiency
+            this.workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+                filename: filePath,
+                useStyles: true,
+                useSharedStrings: true
+            });
+            
+            // Set workbook properties
+            this.workbook.creator = 'WFM Scanner App';
+            this.workbook.lastModifiedBy = 'WFM Scanner App';
+            this.workbook.created = new Date();
+            this.workbook.modified = new Date();
+            
+            // Get statistics to determine mode
+            const stats = await db.getStatistics(sessionId);
+            console.log(`📊 Total results: ${stats.total}`);
+            
+            // Get a sample result to detect mode
+            const sampleResults = await db.getResultsRange(sessionId, 0, 1);
+            const isMerchandisingMode = sampleResults.length > 0 && 
+                                       sampleResults[0].merchandising_data !== null;
+            
+            if (isMerchandisingMode) {
+                console.log('📊 Detected merchandising mode data');
+                await this.streamMerchandisingResults(db, sessionId);
+            } else {
+                console.log('📊 Detected item mode data');
+                await this.streamItemResults(db, sessionId);
+            }
+            
+            // Commit the workbook (finalizes the file)
+            await this.workbook.commit();
+            
+            // Clean up old files after successful export
+            await this.cleanupOldFiles(filePath);
+            
+            console.log(`✅ Streaming Excel export completed: ${filePath}`);
+            return filePath;
+            
+        } catch (error) {
+            console.error('❌ Streaming Excel export failed:', error);
+            throw error;
+        }
+    }
+
+    async streamItemResults(db, sessionId) {
+        const worksheet = this.workbook.addWorksheet('Scan Results');
+        
+        // Define columns
+        worksheet.columns = [
+            { header: 'Store Code', key: 'store', width: 12 },
+            { header: 'ASIN', key: 'asin', width: 15 },
+            { header: 'Extracted Name', key: 'extractedName', width: 40 },
+            { header: 'Price', key: 'price', width: 12 },
+            { header: 'Has Nutrition Facts', key: 'hasNutritionFacts', width: 18 },
+            { header: 'Has Ingredients', key: 'hasIngredients', width: 16 },
+            { header: 'Has Add to Cart', key: 'hasAddToCart', width: 16 },
+            { header: 'Is Available', key: 'isAvailable', width: 14 },
+            { header: 'Variations', key: 'variationCount', width: 12 },
+            { header: 'Status', key: 'status', width: 12 },
+            { header: 'Load Time (ms)', key: 'loadTime', width: 15 },
+            { header: 'Error Message', key: 'error', width: 50 },
+            { header: 'Timestamp', key: 'timestamp', width: 20 },
+            { header: 'Item URL', key: 'url', width: 60 }
+        ];
+        
+        // Style the header row
+        const headerRow = worksheet.getRow(1);
+        headerRow.font = { bold: true, color: { argb: 'FFFFFF' } };
+        headerRow.fill = {
+            type: 'pattern',
+            pattern: 'solid',
+            fgColor: { argb: '366092' }
+        };
+        headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+        headerRow.commit();
+        
+        // Stream results from database
+        let rowCount = 0;
+        await db.streamResults(sessionId, (result) => {
+            const sanitizedRow = {
+                store: this.sanitizeForExcel(result.store),
+                asin: this.sanitizeForExcel(result.asin),
+                extractedName: this.sanitizeForExcel(result.extracted_name || 'N/A'),
+                price: this.sanitizeForExcel(result.price || 'N/A'),
+                hasNutritionFacts: 'NO', // Will be parsed from extraction_details if needed
+                hasIngredients: 'NO',
+                hasAddToCart: 'NO',
+                isAvailable: 'NO',
+                variationCount: 0,
+                status: result.success ? 'SUCCESS' : 'FAILED',
+                loadTime: result.load_time || '',
+                error: this.sanitizeForExcel(result.error_message || ''),
+                timestamp: result.timestamp,
+                url: `https://www.wholefoodsmarket.com/name/dp/${result.asin}?pd_rd_i=${result.asin}&fpw=alm&almBrandId=aNHVc2Akvg`
+            };
+            
+            // Parse extraction details if available
+            if (result.extraction_details) {
+                try {
+                    const details = JSON.parse(result.extraction_details);
+                    // These fields would need to be stored in the database
+                    // For now, we'll leave them as defaults
+                } catch (e) {
+                    console.warn('Failed to parse extraction details:', e.message);
+                }
+            }
+            
+            const row = worksheet.addRow(sanitizedRow);
+            
+            // Color code status
+            if (result.success) {
+                row.getCell('status').fill = {
+                    type: 'pattern',
+                    pattern: 'solid',
+                    fgColor: { argb: 'C6EFCE' }
+                };
+                row.getCell('status').font = { color: { argb: '006100' } };
+            } else {
+                row.getCell('status').fill = {
+                    type: 'pattern',
+                    pattern: 'solid',
+                    fgColor: { argb: 'FFC7CE' }
+                };
+                row.getCell('status').font = { color: { argb: '9C0006' } };
+            }
+            
+            row.commit();
+            rowCount++;
+            
+            if (rowCount % 1000 === 0) {
+                console.log(`📝 Exported ${rowCount} rows...`);
+            }
+        });
+        
+        console.log(`✅ Streamed ${rowCount} item results to Excel`);
+    }
+
+    async streamMerchandisingResults(db, sessionId) {
+        const worksheet = this.workbook.addWorksheet('Merchandising Results');
+        
+        // Define columns
+        worksheet.columns = [
+            { header: 'Store Code', key: 'store', width: 12 },
+            { header: 'Status', key: 'status', width: 12 },
+            { header: 'Load Time (ms)', key: 'loadTime', width: 15 },
+            { header: 'Shovelers Found', key: 'shovelerCount', width: 16 },
+            { header: 'Total ASINs', key: 'totalASINs', width: 12 },
+            { header: 'Error Message', key: 'error', width: 50 },
+            { header: 'Timestamp', key: 'timestamp', width: 20 }
+        ];
+        
+        // Style the header row
+        const headerRow = worksheet.getRow(1);
+        headerRow.font = { bold: true, color: { argb: 'FFFFFF' } };
+        headerRow.fill = {
+            type: 'pattern',
+            pattern: 'solid',
+            fgColor: { argb: '366092' }
+        };
+        headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+        headerRow.commit();
+        
+        // Stream results from database
+        let rowCount = 0;
+        await db.streamResults(sessionId, (result) => {
+            let shovelerCount = 0;
+            let totalASINs = 0;
+            
+            // Parse merchandising data if available
+            if (result.merchandising_data) {
+                try {
+                    const merchData = JSON.parse(result.merchandising_data);
+                    shovelerCount = merchData.shovelers ? merchData.shovelers.length : 0;
+                    totalASINs = merchData.totalASINs || 0;
+                } catch (e) {
+                    console.warn('Failed to parse merchandising data:', e.message);
+                }
+            }
+            
+            const sanitizedRow = {
+                store: this.sanitizeForExcel(result.store),
+                status: result.success ? 'SUCCESS' : 'FAILED',
+                loadTime: result.load_time || '',
+                shovelerCount: shovelerCount,
+                totalASINs: totalASINs,
+                error: this.sanitizeForExcel(result.error_message || ''),
+                timestamp: result.timestamp
+            };
+            
+            const row = worksheet.addRow(sanitizedRow);
+            
+            // Color code status
+            if (result.success) {
+                row.getCell('status').fill = {
+                    type: 'pattern',
+                    pattern: 'solid',
+                    fgColor: { argb: 'C6EFCE' }
+                };
+                row.getCell('status').font = { color: { argb: '006100' } };
+            } else {
+                row.getCell('status').fill = {
+                    type: 'pattern',
+                    pattern: 'solid',
+                    fgColor: { argb: 'FFC7CE' }
+                };
+                row.getCell('status').font = { color: { argb: '9C0006' } };
+            }
+            
+            row.commit();
+            rowCount++;
+            
+            if (rowCount % 100 === 0) {
+                console.log(`📝 Exported ${rowCount} merchandising results...`);
+            }
+        });
+        
+        console.log(`✅ Streamed ${rowCount} merchandising results to Excel`);
+    }
+
     async createResultsWorksheet(results) {
         const worksheet = this.workbook.addWorksheet('Scan Results');
         
@@ -89,14 +338,14 @@ class ExcelExporter {
         };
         headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
         
-        // Add data rows
+        // Add data rows with sanitization
         results.forEach((result, index) => {
             const row = worksheet.addRow({
-                store: result.store,
-                asin: result.asin,
-                name: result.name,
-                extractedName: result.extractedName || 'N/A',
-                price: result.price || 'N/A',
+                store: this.sanitizeForExcel(result.store),
+                asin: this.sanitizeForExcel(result.asin),
+                name: this.sanitizeForExcel(result.name),
+                extractedName: this.sanitizeForExcel(result.extractedName || 'N/A'),
+                price: this.sanitizeForExcel(result.price || 'N/A'),
                 hasNutritionFacts: result.hasNutritionFacts ? 'YES' : 'NO',
                 hasIngredients: result.hasIngredients ? 'YES' : 'NO',
                 hasAddToCart: result.hasAddToCart ? 'YES' : 'NO',
@@ -106,7 +355,7 @@ class ExcelExporter {
                 bundlePartsCount: result.bundlePartsCount || 0,
                 status: result.success ? 'SUCCESS' : 'FAILED',
                 loadTime: result.loadTime || '',
-                error: result.error || '',
+                error: this.sanitizeForExcel(result.error || ''),
                 timestamp: new Date(result.timestamp).toLocaleString(),
                 url: `https://www.wholefoodsmarket.com/name/dp/${result.asin}?pd_rd_i=${result.asin}&fpw=alm&almBrandId=aNHVc2Akvg`
             });
@@ -499,15 +748,15 @@ class ExcelExporter {
         };
         headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
         
-        // Add data rows
+        // Add data rows with sanitization
         results.forEach((result, index) => {
             const row = worksheet.addRow({
-                store: result.store,
+                store: this.sanitizeForExcel(result.store),
                 status: result.success ? 'SUCCESS' : 'FAILED',
                 loadTime: result.loadTime || '',
                 shovelerCount: result.shovelers ? result.shovelers.length : 0,
                 totalASINs: result.totalASINs || 0,
-                error: result.error || '',
+                error: this.sanitizeForExcel(result.error || ''),
                 timestamp: new Date(result.timestamp).toLocaleString()
             });
             
@@ -661,16 +910,16 @@ class ExcelExporter {
         };
         headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
         
-        // Add data rows - flatten shoveler data
+        // Add data rows - flatten shoveler data with sanitization
         results.forEach(result => {
             if (result.success && result.shovelers && result.shovelers.length > 0) {
                 result.shovelers.forEach(shoveler => {
                     const row = worksheet.addRow({
-                        store: result.store,
-                        title: shoveler.title,
-                        carouselId: shoveler.carouselId,
+                        store: this.sanitizeForExcel(result.store),
+                        title: this.sanitizeForExcel(shoveler.title),
+                        carouselId: this.sanitizeForExcel(shoveler.carouselId),
                         asinCount: shoveler.asinCount || shoveler.asins.length,
-                        asins: shoveler.asins.join(', ')
+                        asins: this.sanitizeForExcel(shoveler.asins.join(', '))
                     });
                     
                     // Color code based on ASIN count

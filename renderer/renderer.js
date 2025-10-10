@@ -1,4 +1,4 @@
-const { ipcRenderer } = require('electron');
+// Context isolation enabled - using window.electronAPI from preload script
 
 class WFMScannerUI {
     constructor() {
@@ -13,17 +13,31 @@ class WFMScannerUI {
         this.savedConfig = null;
         this.filteredResults = [];
         this.currentMode = 'item'; // 'item' or 'merchandising'
+        this.observers = []; // Store MutationObservers for cleanup
+        
+        // Virtual scrolling properties
+        this.maxInMemoryResults = 1000; // Limit in-memory results
+        this.updateBatchSize = 10; // Update UI every N results
+        this.resultUpdateCounter = 0; // Counter for batched updates
+        this.virtualScrollRowHeight = 40; // Height of each row in pixels
+        this.virtualScrollVisibleRows = 20; // Number of visible rows
+        this.virtualScrollOffset = 0; // Current scroll offset
         
         this.initializeUI();
         this.setupEventListeners();
         this.setupIpcListeners();
         this.getScreenDimensions();
         this.loadSavedConfig();
+        
+        // Setup cleanup on window unload
+        window.addEventListener('beforeunload', () => {
+            this.cleanup();
+        });
     }
 
     async getScreenDimensions() {
         try {
-            this.screenDimensions = await ipcRenderer.invoke('get-screen-dimensions');
+            this.screenDimensions = await window.electronAPI.getScreenDimensions();
             console.log('📐 Screen dimensions received:', this.screenDimensions);
         } catch (error) {
             console.error('❌ Error getting screen dimensions:', error);
@@ -32,7 +46,7 @@ class WFMScannerUI {
 
     async loadSavedConfig() {
         try {
-            this.savedConfig = await ipcRenderer.invoke('load-config');
+            this.savedConfig = await window.electronAPI.loadConfig();
             console.log('📁 Loaded saved configuration:', this.savedConfig);
             
             // Apply saved files if they exist and are still valid
@@ -232,33 +246,51 @@ class WFMScannerUI {
                 this.updateUI();
             });
             observer.observe(element, { childList: true, subtree: true });
+            this.observers.push(observer); // Store for cleanup
         });
+    }
+
+    cleanup() {
+        // Remove all IPC listeners
+        if (window.electronAPI && window.electronAPI.removeAllListeners) {
+            window.electronAPI.removeAllListeners('scan-progress');
+            window.electronAPI.removeAllListeners('scan-result');
+            window.electronAPI.removeAllListeners('updater-message');
+            window.electronAPI.removeAllListeners('updater-progress');
+        }
+        
+        // Disconnect MutationObservers
+        if (this.observers) {
+            this.observers.forEach(observer => observer.disconnect());
+        }
+        
+        console.log('🧹 Cleanup completed - all listeners removed');
     }
 
     setupIpcListeners() {
         // Scan progress updates
-        ipcRenderer.on('scan-progress', (event, progress) => {
+        window.electronAPI.onScanProgress((progress) => {
             this.updateProgress(progress);
         });
 
         // Scan result updates
-        ipcRenderer.on('scan-result', (event, result) => {
+        window.electronAPI.onScanResult((result) => {
             this.addResult(result);
         });
 
         // Auto-updater events
-        ipcRenderer.on('updater-message', (event, message) => {
+        window.electronAPI.onUpdaterMessage((message) => {
             this.showUpdateMessage(message);
         });
 
-        ipcRenderer.on('updater-progress', (event, progressObj) => {
+        window.electronAPI.onUpdaterProgress((progressObj) => {
             this.showUpdateProgress(progressObj);
         });
     }
 
     async selectStoreMappingFile() {
         try {
-            const filePath = await ipcRenderer.invoke('select-store-mapping-file');
+            const filePath = await window.electronAPI.selectStoreMappingFile();
             if (filePath) {
                 this.storeMappingFile = filePath;
                 const fileName = filePath.split(/[\\/]/).pop();
@@ -274,7 +306,7 @@ class WFMScannerUI {
 
     async selectItemListFile() {
         try {
-            const filePath = await ipcRenderer.invoke('select-item-list-file');
+            const filePath = await window.electronAPI.selectItemListFile();
             if (filePath) {
                 this.itemListFile = filePath;
                 const fileName = filePath.split(/[\\/]/).pop();
@@ -328,11 +360,11 @@ class WFMScannerUI {
     async saveCurrentSettings() {
         try {
             if (!this.savedConfig) {
-                this.savedConfig = await ipcRenderer.invoke('load-config');
+                this.savedConfig = await window.electronAPI.loadConfig();
             }
             
             this.savedConfig.lastSettings = this.getSettings();
-            await ipcRenderer.invoke('save-config', this.savedConfig);
+            await window.electronAPI.saveConfig(this.savedConfig);
         } catch (error) {
             console.error('Error saving settings:', error);
         }
@@ -444,7 +476,7 @@ class WFMScannerUI {
             this.clearResults(); // Clear previous results
             this.updateUI();
 
-            const result = await ipcRenderer.invoke('start-scan', config);
+            const result = await window.electronAPI.startScan(config);
             
             if (result.success) {
                 this.log(`✅ Scan completed successfully! Processed ${result.totalResults} items`, 'success');
@@ -465,7 +497,7 @@ class WFMScannerUI {
     async stopScan() {
         try {
             this.log('🛑 Stopping scan...', 'info');
-            const result = await ipcRenderer.invoke('stop-scan');
+            const result = await window.electronAPI.stopScan();
             
             if (result.success) {
                 this.log('✅ Scan stopped successfully', 'success');
@@ -489,11 +521,11 @@ class WFMScannerUI {
                 return;
             }
 
-            const exportPath = await ipcRenderer.invoke('select-export-location');
+            const exportPath = await window.electronAPI.selectExportLocation();
             if (!exportPath) return;
 
             this.log('📤 Exporting results to Excel...', 'info');
-            const result = await ipcRenderer.invoke('export-results', exportPath);
+            const result = await window.electronAPI.exportResults(exportPath);
             
             if (result.success) {
                 this.log(`✅ Results exported to: ${result.filePath}`, 'success');
@@ -529,6 +561,11 @@ class WFMScannerUI {
     }
 
     addResult(result) {
+        // Limit in-memory results to prevent memory issues
+        if (this.scanResults.length >= this.maxInMemoryResults) {
+            this.scanResults.shift(); // Remove oldest result
+        }
+        
         this.scanResults.push(result);
         
         // Make scanResults available globally for export
@@ -536,8 +573,14 @@ class WFMScannerUI {
             window.scannerUI = this;
         }
         
-        // Update filtered results and display
-        this.filterResults();
+        // Increment counter for batched updates
+        this.resultUpdateCounter++;
+        
+        // Only update UI every N results to prevent lockups
+        if (this.resultUpdateCounter >= this.updateBatchSize) {
+            this.resultUpdateCounter = 0;
+            this.filterResults();
+        }
         
         // Enhanced logging with new data including bundle information
         const status = result.success ? '✅' : '❌';
@@ -605,17 +648,45 @@ class WFMScannerUI {
             return;
         }
         
+        // Use virtual scrolling to render only visible rows
+        this.renderVirtualScrollResults();
+    }
+    
+    renderVirtualScrollResults() {
+        const tbody = this.elements.resultsBody;
+        
         // Clear existing results
         tbody.innerHTML = '';
         
-        // Render recent results (limit for performance)
-        const maxDisplay = 500;
-        const resultsToShow = this.filteredResults.slice(-maxDisplay);
+        // Calculate which results to show (most recent first)
+        const totalResults = this.filteredResults.length;
+        const startIndex = Math.max(0, totalResults - this.virtualScrollVisibleRows);
+        const endIndex = totalResults;
         
-        resultsToShow.reverse().forEach(result => {
+        // Get the slice of results to display (most recent)
+        const resultsToShow = this.filteredResults.slice(startIndex, endIndex);
+        
+        // Render only visible rows (reversed to show newest first)
+        resultsToShow.reverse().forEach((result, index) => {
             const row = this.createResultRow(result);
             tbody.appendChild(row);
         });
+        
+        // Add info about total results if we're limiting display
+        if (totalResults > this.virtualScrollVisibleRows) {
+            const infoRow = document.createElement('div');
+            infoRow.className = 'table-row info-row';
+            infoRow.style.backgroundColor = '#f0f0f0';
+            infoRow.style.fontStyle = 'italic';
+            infoRow.style.padding = '10px';
+            infoRow.innerHTML = `
+                <div class="table-cell" style="grid-column: 1 / -1; text-align: center;">
+                    📊 Showing ${this.virtualScrollVisibleRows} most recent results out of ${totalResults} total
+                    ${totalResults > this.maxInMemoryResults ? ` (keeping last ${this.maxInMemoryResults} in memory)` : ''}
+                </div>
+            `;
+            tbody.appendChild(infoRow);
+        }
     }
 
     createResultRow(result) {
@@ -659,6 +730,7 @@ class WFMScannerUI {
     clearResults() {
         this.scanResults = [];
         this.filteredResults = [];
+        this.resultUpdateCounter = 0; // Reset counter
         this.renderResults();
     }
 
@@ -771,7 +843,7 @@ class WFMScannerUI {
     async initializeVersion() {
         try {
             // Get version from package.json via main process
-            const version = await ipcRenderer.invoke('get-app-version');
+            const version = await window.electronAPI.getAppVersion();
             if (this.elements.appVersion && version) {
                 this.elements.appVersion.textContent = `v${version}`;
             }
@@ -819,7 +891,7 @@ class WFMScannerUI {
     async checkForUpdates() {
         try {
             this.log('🔍 Checking for updates...', 'info');
-            const result = await ipcRenderer.invoke('check-for-updates');
+            const result = await window.electronAPI.checkForUpdates();
             if (result.success) {
                 this.log('✅ Update check completed', 'success');
             } else {
@@ -833,7 +905,7 @@ class WFMScannerUI {
     async restartAndInstall() {
         try {
             this.log('🔄 Restarting to install update...', 'info');
-            await ipcRenderer.invoke('restart-and-install');
+            await window.electronAPI.restartAndInstall();
         } catch (error) {
             this.log(`❌ Error restarting for update: ${error.message}`, 'error');
         }

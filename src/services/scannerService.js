@@ -3,6 +3,8 @@ const fs = require('fs').promises;
 const path = require('path');
 const csv = require('csv-parser');
 const ExcelJS = require('exceljs');
+const IPCValidator = require('../utils/ipc-validator');
+const ResultsDatabase = require('../database/resultsDatabase');
 
 class ScannerService {
     constructor(config) {
@@ -13,7 +15,8 @@ class ScannerService {
         this.shouldStop = false;
         this.storeMappings = new Map();
         this.itemList = [];
-        this.results = [];
+        this.db = new ResultsDatabase();
+        this.sessionId = this.generateSessionId();
         this.csrfToken = null;
         this.csrfTokenFile = 'csrf_token.json'; // File to persist CSRF token
         this.mode = config.mode || 'item'; // 'item' or 'merchandising'
@@ -37,13 +40,20 @@ class ScannerService {
         this.onResult = null;
     }
 
+    generateSessionId() {
+        return `scan_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    }
+
     async startScan() {
         try {
             this.isRunning = true;
             this.shouldStop = false;
-            this.results = [];
             
             console.log('🚀 Starting WFM Scanner Service...');
+            
+            // Initialize database
+            await this.db.initialize();
+            console.log('✅ Database initialized');
             
             // Load persisted CSRF token
             await this.loadPersistedCSRFToken();
@@ -61,13 +71,19 @@ class ScannerService {
             await this.performScan();
             
             console.log('✅ Scan completed successfully');
-            return this.results;
+            
+            // Get final statistics from database
+            const stats = await this.db.getStatistics(this.sessionId);
+            console.log('📊 Final statistics:', stats);
+            
+            return { sessionId: this.sessionId, stats };
             
         } catch (error) {
             console.error('❌ Scan failed:', error);
             throw error;
         } finally {
             await this.cleanup();
+            await this.db.close();
             this.isRunning = false;
         }
     }
@@ -318,7 +334,6 @@ class ScannerService {
             launchOptions.args = [
                 `--window-position=${screenDimensions.playwrightX},${screenDimensions.playwrightY}`,
                 `--window-size=${screenDimensions.playwrightWidth},${screenDimensions.playwrightHeight}`,
-                '--disable-web-security',
                 '--disable-features=VizDisplayCompositor'
             ];
         }
@@ -364,6 +379,33 @@ class ScannerService {
 
     async performItemScan() {
         console.log('🔍 Starting item scan process...');
+        
+        // Validate all ASINs before starting
+        console.log('🔍 Validating ASINs...');
+        for (const item of this.itemList) {
+            try {
+                IPCValidator.sanitizeASIN(item.asin);
+            } catch (error) {
+                console.error(`❌ Invalid ASIN: ${item.asin}`, error.message);
+                item.validationError = error.message;
+            }
+        }
+        
+        // Filter out items with validation errors
+        const validItems = this.itemList.filter(item => !item.validationError);
+        const invalidCount = this.itemList.length - validItems.length;
+        
+        if (invalidCount > 0) {
+            console.warn(`⚠️ Filtered out ${invalidCount} items with invalid ASINs`);
+        }
+        console.log(`✅ Validated ${validItems.length}/${this.itemList.length} items`);
+        
+        // Use validated items for scanning
+        this.itemList = validItems;
+        
+        // Create database session
+        await this.db.createSession(this.sessionId, this.itemList.length);
+        console.log(`📊 Created database session: ${this.sessionId}`);
         
         // Group items by store
         const itemsByStore = new Map();
@@ -449,6 +491,8 @@ class ScannerService {
             await this.cleanupAgents();
         }
         
+        // Complete the session
+        await this.db.completeSession(this.sessionId);
         console.log('✅ Scan process completed');
     }
 
@@ -513,15 +557,18 @@ class ScannerService {
                 // Create error result for this store
                 const result = {
                     store: storeCode,
+                    asin: 'MERCHANDISING',
                     success: false,
                     timestamp: new Date().toISOString(),
-                    error: 'Failed to switch to store',
+                    errorMessage: 'Failed to switch to store',
                     mode: 'merchandising',
-                    shovelers: [],
-                    totalASINs: 0
+                    merchandisingData: {
+                        shovelers: [],
+                        totalASINs: 0
+                    }
                 };
                 
-                this.results.push(result);
+                await this.db.insertResult(this.sessionId, result);
                 this.currentProgress.itemsProcessed++;
                 this.currentProgress.errorCount++;
                 this.emitProgress();
@@ -589,6 +636,18 @@ class ScannerService {
             console.log(`❌ ${storeCode} - Error extracting merchandising data: ${error.message}`);
         }
         
+        // Store result in database
+        await this.db.insertResult(this.sessionId, {
+            store: storeCode,
+            asin: 'MERCHANDISING',
+            success: result.success,
+            errorMessage: result.error,
+            merchandisingData: {
+                shovelers: result.shovelers,
+                totalASINs: result.totalASINs
+            }
+        });
+        
         // Update progress
         this.currentProgress.itemsProcessed++;
         if (result.success) {
@@ -597,8 +656,12 @@ class ScannerService {
             this.currentProgress.errorCount++;
         }
         
-        // Store result
-        this.results.push(result);
+        // Update database progress
+        await this.db.updateProgress(this.sessionId, {
+            currentStore: storeCode,
+            currentItem: this.currentProgress.itemsProcessed,
+            totalItems: this.currentProgress.totalItems
+        });
         
         // Emit progress and result
         this.emitProgress();
@@ -1225,7 +1288,7 @@ class ScannerService {
                     success: false,
                     loadTime: null,
                     timestamp: new Date().toISOString(),
-                    error: error.message,
+                    errorMessage: error.message,
                     extractedName: null,
                     price: null,
                     hasNutritionFacts: false,
@@ -1238,7 +1301,7 @@ class ScannerService {
                     agent: agent.id
                 };
                 
-                this.results.push(result);
+                await this.db.insertResult(this.sessionId, result);
                 this.currentProgress.itemsProcessed++;
                 this.currentProgress.errorCount++;
                 this.emitProgress();
@@ -1251,24 +1314,37 @@ class ScannerService {
 
     async cleanupAgents() {
         console.log('🧹 Cleaning up agents...');
+        const errors = [];
         
         for (const agent of this.agents) {
             try {
-                if (agent.page) {
-                    await agent.page.close();
+                if (agent.page && !agent.page.isClosed()) {
+                    await agent.page.close().catch(e => errors.push(e));
                 }
+            } catch (error) {
+                errors.push(error);
+            }
+            
+            try {
                 // Only close context if it's not shared (old agents)
                 if (agent.context && !agent.isSharedContext) {
-                    await agent.context.close();
+                    await agent.context.close().catch(e => errors.push(e));
                 }
-                console.log(`✅ ${agent.id} cleaned up successfully (persistent: ${agent.isPersistent || false}, shared context: ${agent.isSharedContext || false})`);
             } catch (error) {
-                console.error(`❌ Error cleaning up ${agent.id}:`, error);
+                errors.push(error);
             }
+            
+            console.log(`✅ ${agent.id} cleaned up successfully (persistent: ${agent.isPersistent || false}, shared context: ${agent.isSharedContext || false})`);
         }
         
+        // Clear agents array
         this.agents = [];
         this.activeAgents = 0;
+        
+        if (errors.length > 0) {
+            console.error(`⚠️ Cleanup completed with ${errors.length} errors`);
+        }
+        
         console.log('✅ All agents cleaned up');
     }
 
@@ -1465,6 +1541,9 @@ class ScannerService {
             agent.isActive = false;
             this.activeAgents--;
             
+            // Store result in database
+            await this.db.insertResult(this.sessionId, result);
+            
             // Update progress
             this.currentProgress.itemsProcessed++;
             if (result.success) {
@@ -1473,8 +1552,12 @@ class ScannerService {
                 this.currentProgress.errorCount++;
             }
             
-            // Store result
-            this.results.push(result);
+            // Update database progress
+            await this.db.updateProgress(this.sessionId, {
+                currentStore: storeCode,
+                currentItem: this.currentProgress.itemsProcessed,
+                totalItems: this.currentProgress.totalItems
+            });
             
             // Emit progress and result
             this.emitProgress();
@@ -1815,14 +1898,9 @@ class ScannerService {
             let csrfToken = await this.ensureCSRFToken(this.page);
             
             if (!csrfToken) {
-                console.warn('⚠️ Enhanced CSRF token acquisition failed, trying fallback');
-                const fallbackToken = await this.getFallbackCSRFToken();
-                if (!fallbackToken) {
-                    console.error('❌ No CSRF token available (including fallback)');
-                    // Try alternative method without token
-                    return await this.alternativeStoreSwitch(storeId, storeCode);
-                }
-                csrfToken = fallbackToken;
+                console.error('❌ Failed to acquire CSRF token. Please ensure you are logged in to Whole Foods Market.');
+                // Try alternative method without token
+                return await this.alternativeStoreSwitch(storeId, storeCode);
             }
             
             console.log(`✅ CSRF token acquired: ${csrfToken.substring(0, 20)}...`);
@@ -1874,11 +1952,20 @@ class ScannerService {
 
             // If no token found, try enhanced acquisition method
             console.log('⚠️ No CSRF token found - attempting enhanced acquisition...');
-            return await this.enhancedCSRFTokenAcquisition(page);
+            const enhancedToken = await this.enhancedCSRFTokenAcquisition(page);
+            
+            // If enhanced acquisition also fails, use fallback
+            if (!enhancedToken) {
+                console.log("⚠️ Failed to acquire CSRF token, using fallback");
+                return await this.getFallbackCSRFToken();
+            }
+            
+            return enhancedToken;
             
         } catch (error) {
             console.error('❌ Error getting CSRF token:', error);
-            return null;
+            console.log("⚠️ Using fallback CSRF token due to error");
+            return await this.getFallbackCSRFToken();
         }
     }
 
@@ -2098,11 +2185,8 @@ class ScannerService {
     }
 
     async getFallbackCSRFToken() {
-        // Fallback CSRF token from working example (should be configurable)
         const fallbackToken = 'g8vLu/dZWzjCsJDFVrLrpFVhPtr6MUjMo2ijQsM2pdUFAAAAAQAAAABodo6GcmF3AAAAACr/Igfie4qiUf9rqj+gAw==';
         console.log("🔄 Using fallback CSRF token:", fallbackToken);
-        console.log("Token length:", fallbackToken.length);
-        console.log("Token format valid:", /^[A-Za-z0-9+/]+=*$/.test(fallbackToken));
         return fallbackToken;
     }
 
@@ -2402,6 +2486,9 @@ class ScannerService {
             console.log(`❌ ${item.store} - ${item.asin} - Error: ${error.message}`);
         }
         
+        // Store result in database
+        await this.db.insertResult(this.sessionId, result);
+        
         // Update progress
         this.currentProgress.itemsProcessed++;
         if (result.success) {
@@ -2410,8 +2497,12 @@ class ScannerService {
             this.currentProgress.errorCount++;
         }
         
-        // Store result
-        this.results.push(result);
+        // Update database progress
+        await this.db.updateProgress(this.sessionId, {
+            currentStore: item.store,
+            currentItem: this.currentProgress.itemsProcessed,
+            totalItems: this.currentProgress.totalItems
+        });
         
         // Emit progress and result
         this.emitProgress();
@@ -2758,12 +2849,12 @@ class ScannerService {
             
             // Cleanup main browser resources
             if (this.page) {
-                await this.page.close();
+                await this.page.close().catch(e => console.error('Page close error:', e));
                 this.page = null;
             }
             
             if (this.browser) {
-                await this.browser.close();
+                await this.browser.close().catch(e => console.error('Browser close error:', e));
                 this.browser = null;
             }
             

@@ -1,13 +1,18 @@
-const { app, BrowserWindow, ipcMain, dialog, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, screen, session } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
 const fs = require('fs');
+const IPCValidator = require('./utils/ipc-validator');
+const RateLimiter = require('./utils/rate-limiter');
+const ResultsDatabase = require('./database/resultsDatabase');
 
 // File to store last used files
 const configPath = path.join(app.getPath('userData'), 'scanner-config.json');
 
 let mainWindow;
 let currentScanner = null; // Track the current scanner instance
+let currentSessionId = null; // Track the current scan session ID
+const rateLimiter = new RateLimiter(); // Initialize rate limiter
 
 // Helper functions for configuration persistence
 function loadConfig() {
@@ -63,8 +68,9 @@ function createWindow() {
         y: 0,
         show: false, // Don't show until ready
         webPreferences: {
-            nodeIntegration: true,
-            contextIsolation: false
+            nodeIntegration: false,
+            contextIsolation: true,
+            preload: path.join(__dirname, '../renderer/preload.js')
         }
     });
 
@@ -104,10 +110,25 @@ function setupIpcHandlers() {
     });
 
     // Handle saving configuration
-    ipcMain.handle('save-config', (event, config) => {
+    ipcMain.handle('save-config', async (event, config) => {
         console.log('Saving configuration...');
-        saveConfig(config);
-        return true;
+        try {
+            // Apply rate limiting
+            rateLimiter.checkLimit('save-config');
+            
+            // Validate config
+            IPCValidator.validate('save-config', { config });
+            
+            console.log('✅ Configuration validated');
+            saveConfig(config);
+            return { success: true };
+        } catch (error) {
+            console.error('❌ Validation/Rate limit error:', error.message);
+            return {
+                success: false,
+                error: error.message
+            };
+        }
     });
 
     // Handle screen dimensions request
@@ -189,6 +210,14 @@ function setupIpcHandlers() {
         console.log('Scan start requested with config:', config);
         
         try {
+            // Apply rate limiting
+            rateLimiter.checkLimit('start-scan');
+            
+            // Validate input
+            const validated = IPCValidator.validate('start-scan', config);
+            
+            console.log('✅ Scan configuration validated');
+            
             // Dynamically import the scanner service to avoid startup issues
             const { ScannerService } = require('./services/scannerService');
             const { ExcelExporter } = require('./services/excelExporter');
@@ -214,9 +243,9 @@ function setupIpcHandlers() {
                 playwrightHeight: screenHeight
             };
             
-            // Create scanner configuration
+            // Create scanner configuration (use validated config)
             const scannerConfig = {
-                ...config,
+                ...validated,
                 screenDimensions
             };
             
@@ -235,26 +264,34 @@ function setupIpcHandlers() {
             };
             
             // Start the scan
-            const results = await scanner.startScan();
+            const scanResult = await scanner.startScan();
             currentScanner = null; // Clear reference when done
+            currentSessionId = scanResult.sessionId; // Store session ID for export
             
-            // Export results to Excel
-            console.log('Exporting results to Excel...');
+            // Export results to Excel from database
+            console.log('Exporting results to Excel from database...');
             const exporter = new ExcelExporter();
             
             // Generate export file path
             const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
             const exportPath = path.join(process.cwd(), `WFM_Scan_Results_${timestamp}.xlsx`);
             
-            const finalExportPath = await exporter.exportResults(results, exportPath);
+            // Initialize database for export
+            const db = new ResultsDatabase();
+            await db.initialize();
+            
+            const finalExportPath = await exporter.exportFromDatabase(db, scanResult.sessionId, exportPath);
+            
+            await db.close();
             
             console.log('Scan completed successfully');
             return {
                 success: true,
                 message: 'Scan completed successfully',
-                resultsCount: results.length,
+                resultsCount: scanResult.stats.total,
                 exportPath: finalExportPath,
-                results: results
+                sessionId: scanResult.sessionId,
+                stats: scanResult.stats
             };
             
         } catch (error) {
@@ -271,6 +308,9 @@ function setupIpcHandlers() {
         console.log('Scan stop requested');
         
         try {
+            // Apply rate limiting
+            rateLimiter.checkLimit('stop-scan');
+            
             if (currentScanner) {
                 console.log('Stopping current scanner...');
                 await currentScanner.stopScan();
@@ -309,10 +349,30 @@ function setupIpcHandlers() {
         console.log('Results export requested to:', exportPath);
         
         try {
-            // Get the current results from the renderer
-            const results = await mainWindow.webContents.executeJavaScript('window.scannerUI ? window.scannerUI.scanResults : []');
+            // Apply rate limiting
+            rateLimiter.checkLimit('export-results');
             
-            if (!results || results.length === 0) {
+            // Validate export path
+            IPCValidator.validate('export-results', { exportPath });
+            
+            console.log('✅ Export path validated');
+            
+            // Check if we have a current session ID
+            if (!currentSessionId) {
+                return {
+                    success: false,
+                    error: 'No scan session available to export'
+                };
+            }
+
+            // Initialize database
+            const db = new ResultsDatabase();
+            await db.initialize();
+            
+            // Check if session has results
+            const resultCount = await db.getResultCount(currentSessionId);
+            if (resultCount === 0) {
+                await db.close();
                 return {
                     success: false,
                     error: 'No results to export'
@@ -323,13 +383,15 @@ function setupIpcHandlers() {
             const { ExcelExporter } = require('./services/excelExporter');
             const exporter = new ExcelExporter();
             
-            const finalExportPath = await exporter.exportResults(results, exportPath);
+            const finalExportPath = await exporter.exportFromDatabase(db, currentSessionId, exportPath);
+            
+            await db.close();
             
             console.log('Export completed successfully');
             return {
                 success: true,
                 filePath: finalExportPath,
-                resultsCount: results.length
+                resultsCount: resultCount
             };
             
         } catch (error) {
@@ -362,6 +424,79 @@ function setupIpcHandlers() {
     // Handle get app version
     ipcMain.handle('get-app-version', () => {
         return app.getVersion();
+    });
+
+    // Handle get database statistics
+    ipcMain.handle('get-database-stats', async () => {
+        try {
+            const db = new ResultsDatabase();
+            await db.initialize();
+            const stats = await db.getDatabaseStats();
+            await db.close();
+            return { success: true, stats };
+        } catch (error) {
+            console.error('Error getting database stats:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    // Handle get all sessions
+    ipcMain.handle('get-all-sessions', async () => {
+        try {
+            const db = new ResultsDatabase();
+            await db.initialize();
+            const sessions = await db.getAllSessions();
+            await db.close();
+            return { success: true, sessions };
+        } catch (error) {
+            console.error('Error getting sessions:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    // Handle delete session
+    ipcMain.handle('delete-session', async (event, sessionId) => {
+        try {
+            const db = new ResultsDatabase();
+            await db.initialize();
+            const result = await db.deleteSession(sessionId);
+            await db.vacuum(); // Reclaim space after deletion
+            await db.close();
+            return { success: true, ...result };
+        } catch (error) {
+            console.error('Error deleting session:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    // Handle cleanup old sessions
+    ipcMain.handle('cleanup-old-sessions', async (event, daysToKeep = 3) => {
+        try {
+            const db = new ResultsDatabase();
+            await db.initialize();
+            const result = await db.cleanupOldSessions(daysToKeep);
+            await db.vacuum(); // Reclaim space after cleanup
+            await db.close();
+            return { success: true, ...result };
+        } catch (error) {
+            console.error('Error cleaning up sessions:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    // Handle keep latest scans
+    ipcMain.handle('keep-latest-scans', async (event, count = 10) => {
+        try {
+            const db = new ResultsDatabase();
+            await db.initialize();
+            const result = await db.keepLatestScans(count);
+            await db.vacuum(); // Reclaim space after cleanup
+            await db.close();
+            return { success: true, ...result };
+        } catch (error) {
+            console.error('Error keeping latest scans:', error);
+            return { success: false, error: error.message };
+        }
     });
 
     console.log('IPC handlers set up');
@@ -424,8 +559,64 @@ function setupAutoUpdater() {
 }
 
 // App event handlers
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
     console.log('Electron app ready');
+    
+    // Set Content Security Policy
+    session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+        callback({
+            responseHeaders: {
+                ...details.responseHeaders,
+                'Content-Security-Policy': [
+                    "default-src 'self'; " +
+                    "script-src 'self'; " +
+                    "style-src 'self' 'unsafe-inline'; " +
+                    "img-src 'self' data:; " +
+                    "font-src 'self'; " +
+                    "connect-src 'self' https://www.wholefoodsmarket.com"
+                ]
+            }
+        });
+    });
+    
+    // Perform database cleanup on startup
+    try {
+        console.log('🧹 Performing database cleanup...');
+        const db = new ResultsDatabase();
+        await db.initialize();
+        
+        // Get database stats before cleanup
+        const statsBefore = await db.getDatabaseStats();
+        console.log(`📊 Database stats before cleanup:
+  - Sessions: ${statsBefore.sessionCount}
+  - Results: ${statsBefore.resultCount}
+  - Size: ${statsBefore.fileSizeMB} MB
+  - Oldest: ${statsBefore.oldestSession || 'N/A'}
+  - Newest: ${statsBefore.newestSession || 'N/A'}`);
+        
+        // Clean up old sessions (keep last 3 days as per user preference)
+        const cleanupResult = await db.cleanupOldSessions(3);
+        
+        // Vacuum database to reclaim space
+        if (cleanupResult.deletedSessions > 0 || cleanupResult.deletedResults > 0) {
+            await db.vacuum();
+        }
+        
+        // Get database stats after cleanup
+        const statsAfter = await db.getDatabaseStats();
+        console.log(`📊 Database stats after cleanup:
+  - Sessions: ${statsAfter.sessionCount}
+  - Results: ${statsAfter.resultCount}
+  - Size: ${statsAfter.fileSizeMB} MB
+  - Space saved: ${(parseFloat(statsBefore.fileSizeMB) - parseFloat(statsAfter.fileSizeMB)).toFixed(2)} MB`);
+        
+        await db.close();
+        console.log('✅ Database cleanup complete');
+    } catch (error) {
+        console.error('❌ Database cleanup failed:', error);
+        // Don't prevent app startup if cleanup fails
+    }
+    
     createWindow();
     setupIpcHandlers();
     

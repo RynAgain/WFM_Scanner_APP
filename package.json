@@ -23,11 +23,12 @@
     "electron-builder": "^24.9.1"
   },
   "dependencies": {
-    "playwright": "^1.40.0",
-    "exceljs": "^4.4.0",
     "csv-parser": "^3.0.0",
+    "electron-updater": "^6.1.7",
+    "exceljs": "^4.4.0",
     "node-fetch": "^3.3.2",
-    "electron-updater": "^6.1.7"
+    "playwright": "^1.40.0",
+    "sqlite3": "^5.1.7"
   },
   "build": {
     "appId": "com.wts.scanner-app",
@@ -46,15 +47,21 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         },
         {
           "target": "portable",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         },
         {
           "target": "dir",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "requestedExecutionLevel": "asInvoker"
